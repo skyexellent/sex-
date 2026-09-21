@@ -7,9 +7,10 @@ import os
 import random
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from urllib.parse import parse_qsl
 
-import aiosqlite
+import asyncpg
 import uvicorn
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -30,127 +31,198 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://example.com")
-DB_PATH = "casino.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-COMMISSION = 0.05            # 5% боту
-MIN_BET = 10                 # минимум 10⭐
-MAX_BET = 10000              # максимум 10000⭐
-MAX_PLAYERS = 10             # максимум игроков в раунде
-LOBBY_TIME = 30              # 30 секунд на приём ставок
-SPIN_TIME = 6                # 6 секунд на анимацию
+COMMISSION = 0.05
+REF_BONUS = 0.10
+MIN_BET = 10
+MAX_BET = 10000
+MAX_PLAYERS = 10
+LOBBY_TIME = 30
+SPIN_TIME = 6
+MIN_WITHDRAW = 100
+DAILY_BONUS = 10
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("casino")
 
-# ==================== БД ====================
+# ==================== БД (PostgreSQL) ====================
+pool: asyncpg.Pool | None = None
+
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+    global pool
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+
+    async with pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                balance INTEGER DEFAULT 0,
-                total_topup INTEGER DEFAULT 0,
-                total_spent INTEGER DEFAULT 0,
-                referrer_id INTEGER,
+                balance BIGINT DEFAULT 0,
+                total_topup BIGINT DEFAULT 0,
+                total_spent BIGINT DEFAULT 0,
+                total_won BIGINT DEFAULT 0,
+                referrer_id BIGINT,
+                ref_earned BIGINT DEFAULT 0,
+                last_bonus TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                amount INTEGER,
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                amount BIGINT,
                 type TEXT,
                 description TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS rounds (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 game TEXT,
-                pool INTEGER,
-                winner_id INTEGER,
+                pool BIGINT,
+                winner_id BIGINT,
                 winner_name TEXT,
-                payout INTEGER,
-                commission INTEGER,
+                payout BIGINT,
+                commission BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS bets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 round_id INTEGER,
-                user_id INTEGER,
+                user_id BIGINT,
                 username TEXT,
-                stake INTEGER,
+                stake BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.commit()
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS withdrawals (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                amount BIGINT,
+                requisites TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    log.info("✅ БД готова")
 
 async def get_user(user_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as c:
-            return await c.fetchone()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
 
 async def upsert_user(user_id: int, username: str, first_name: str, referrer_id: int | None = None):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """INSERT INTO users (user_id, username, first_name, referrer_id)
-               VALUES (?, ?, ?, ?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                 username = excluded.username,
-                 first_name = excluded.first_name""",
-            (user_id, username or "", first_name or "", referrer_id)
-        )
-        await db.commit()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow("SELECT user_id FROM users WHERE user_id = $1", user_id)
+        if existing:
+            await conn.execute(
+                "UPDATE users SET username = $1, first_name = $2 WHERE user_id = $3",
+                username or "", first_name or "", user_id,
+            )
+        else:
+            await conn.execute(
+                """INSERT INTO users (user_id, username, first_name, referrer_id)
+                   VALUES ($1, $2, $3, $4)""",
+                user_id, username or "", first_name or "", referrer_id,
+            )
 
 async def change_balance(user_id: int, amount: int, ttype: str, desc: str = ""):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-        await db.execute(
-            "INSERT INTO transactions (user_id, amount, type, description) VALUES (?,?,?,?)",
-            (user_id, amount, ttype, desc)
-        )
-        await db.commit()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, user_id)
+            await conn.execute(
+                "INSERT INTO transactions (user_id, amount, type, description) VALUES ($1,$2,$3,$4)",
+                user_id, amount, ttype, desc,
+            )
 
 async def atomic_bet(user_id: int, amount: int) -> bool:
-    """Атомарно списываем ставку. Возвращает True если успешно."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?",
-            (amount, user_id, amount)
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE users SET balance = balance - $1 WHERE user_id = $2 AND balance >= $1",
+            amount, user_id,
         )
-        await db.commit()
-        return cur.rowcount > 0
+        return result == "UPDATE 1"
 
-async def save_round(game: str, pool: int, winner_id: int, winner_name: str, payout: int, commission: int, bets: list):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            """INSERT INTO rounds (game, pool, winner_id, winner_name, payout, commission)
-               VALUES (?,?,?,?,?,?)""",
-            (game, pool, winner_id, winner_name, payout, commission)
-        )
-        round_id = cur.lastrowid
-        for b in bets:
-            await db.execute(
-                "INSERT INTO bets (round_id, user_id, username, stake) VALUES (?,?,?,?)",
-                (round_id, b["user_id"], b["username"], b["stake"])
+async def save_round(game: str, pool_: int, winner_id: int, winner_name: str,
+                     payout: int, commission: int, bets: list):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            round_id = await conn.fetchval(
+                """INSERT INTO rounds (game, pool, winner_id, winner_name, payout, commission)
+                   VALUES ($1,$2,$3,$4,$5,$6) RETURNING id""",
+                game, pool_, winner_id, winner_name, payout, commission,
             )
-        await db.commit()
-        return round_id
+            for b in bets:
+                await conn.execute(
+                    "INSERT INTO bets (round_id, user_id, username, stake) VALUES ($1,$2,$3,$4)",
+                    round_id, b["user_id"], b["username"], b["stake"],
+                )
 
-async def get_recent_rounds(limit: int = 10):
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM rounds ORDER BY id DESC LIMIT ?", (limit,)
-        ) as c:
-            return [dict(r) for r in await c.fetchall()]
+async def get_recent_rounds(limit: int = 20):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM rounds ORDER BY id DESC LIMIT $1", limit)
+        return [dict(r) for r in rows]
+
+async def get_top_players(limit: int = 10):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT user_id, username, first_name, total_won, balance
+               FROM users ORDER BY total_won DESC LIMIT $1""", limit
+        )
+        return [dict(r) for r in rows]
+
+async def get_referral_stats(user_id: int):
+    async with pool.acquire() as conn:
+        count = await conn.fetchval("SELECT COUNT(*) FROM users WHERE referrer_id = $1", user_id)
+        earned = await conn.fetchval("SELECT ref_earned FROM users WHERE user_id = $1", user_id)
+        return {"count": count or 0, "earned": earned or 0}
+
+async def try_daily_bonus(user_id: int):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT last_bonus FROM users WHERE user_id = $1", user_id)
+        if not row:
+            return {"ok": False, "msg": "Профиль не найден"}
+        last = row["last_bonus"]
+        if last and datetime.utcnow() - last < timedelta(hours=24):
+            left = timedelta(hours=24) - (datetime.utcnow() - last)
+            return {"ok": False, "msg": f"Бонус доступен через {left}"}
+        await conn.execute(
+            "UPDATE users SET balance = balance + $1, last_bonus = CURRENT_TIMESTAMP WHERE user_id = $2",
+            DAILY_BONUS, user_id,
+        )
+        await conn.execute(
+            "INSERT INTO transactions (user_id, amount, type, description) VALUES ($1,$2,$3,$4)",
+            user_id, DAILY_BONUS, "daily", "Ежедневный бонус",
+        )
+        return {"ok": True, "amount": DAILY_BONUS}
+
+# --- Вывод ---
+async def create_withdrawal(user_id: int, amount: int, requisites: str):
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "INSERT INTO withdrawals (user_id, amount, requisites) VALUES ($1,$2,$3) RETURNING id",
+            user_id, amount, requisites,
+        )
+
+async def get_pending_withdrawals():
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM withdrawals WHERE status='pending' ORDER BY id")
+        return [dict(r) for r in rows]
+
+async def set_withdrawal_status(wid: int, status: str):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE withdrawals SET status=$1 WHERE id=$2", status, wid)
+
+async def get_withdrawal(wid: int):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM withdrawals WHERE id=$1", wid)
+        return dict(row) if row else None
 
 # ==================== initData ====================
 def verify_init_data(init_data: str) -> dict:
@@ -168,6 +240,10 @@ def verify_init_data(init_data: str) -> dict:
         raise HTTPException(401, "no user")
     return user
 
+def require_admin(user_id: int):
+    if user_id not in ADMIN_IDS:
+        raise HTTPException(403, "admin only")
+
 # ==================== БОТ ====================
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -182,18 +258,14 @@ async def cmd_start(message: Message):
             referrer = int(arg[4:])
             if referrer == message.from_user.id:
                 referrer = None
-    await upsert_user(
-        message.from_user.id,
-        message.from_user.username,
-        message.from_user.full_name,
-        referrer,
-    )
+    await upsert_user(message.from_user.id, message.from_user.username,
+                     message.from_user.full_name, referrer)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎰 Открыть казино", web_app=WebAppInfo(url=WEBAPP_URL))],
     ])
     await message.answer(
         f"👋 Привет, <b>{message.from_user.full_name}</b>!\n\n"
-        f"💫 PvP-игры: Колесо и Квадрат.\n"
+        f"🎡 Колесо и 🟦 Квадрат — PvP-игры.\n"
         f"Ставки от {MIN_BET}⭐, победитель забирает 95% банка.\n\n"
         f"Открой казино кнопкой ниже 👇",
         reply_markup=kb,
@@ -206,27 +278,42 @@ async def pre_checkout(q: PreCheckoutQuery):
 @router.message(F.successful_payment)
 async def on_payment(message: Message):
     amount = message.successful_payment.total_amount
-    await change_balance(message.from_user.id, amount, "topup", f"Пополнение {amount}⭐")
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE users SET total_topup = total_topup + ? WHERE user_id = ?",
-                         (amount, message.from_user.id))
-        await db.commit()
+    uid = message.from_user.id
+    await change_balance(uid, amount, "topup", f"Пополнение {amount}⭐")
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET total_topup = total_topup + $1 WHERE user_id = $2", amount, uid)
+        # реферальный бонус
+        user = await conn.fetchrow("SELECT referrer_id FROM users WHERE user_id = $1", uid)
+        if user and user["referrer_id"]:
+            bonus = int(amount * REF_BONUS)
+            if bonus > 0:
+                await conn.execute(
+                    "UPDATE users SET balance = balance + $1, ref_earned = ref_earned + $1 WHERE user_id = $2",
+                    bonus, user["referrer_id"],
+                )
+                await conn.execute(
+                    "INSERT INTO transactions (user_id, amount, type, description) VALUES ($1,$2,$3,$4)",
+                    user["referrer_id"], bonus, "ref_bonus", f"Бонус за друга {uid}",
+                )
+                try:
+                    await bot.send_message(
+                        user["referrer_id"],
+                        f"🎁 Реферальный бонус <b>+{bonus}⭐</b> за пополнение друга!"
+                    )
+                except Exception:
+                    pass
     await message.answer(f"✅ Пополнено <b>+{amount}⭐</b>")
 
 dp.include_router(router)
 
-# ==================== ИГРОВАЯ ЛОГИКА ====================
-# Лобби каждой игры: {"wheel": {...}, "square": {...}}
+# ==================== ЛОББИ ИГР ====================
 lobbies = {
     "wheel":  {"players": [], "deadline": 0, "task": None, "spinning": False},
     "square": {"players": [], "deadline": 0, "task": None, "spinning": False},
 }
-
-# WebSocket-подключения: {user_id: WebSocket}
 ws_clients: dict[int, WebSocket] = {}
 
 def pick_winner(players: list) -> dict:
-    """Пропорциональный выбор по ставкам."""
     total = sum(p["stake"] for p in players)
     roll = random.random() * total
     for p in players:
@@ -236,7 +323,6 @@ def pick_winner(players: list) -> dict:
     return players[-1]
 
 def build_state(game: str) -> dict:
-    """Текущее состояние лобби для отправки клиентам."""
     lob = lobbies[game]
     total = sum(p["stake"] for p in lob["players"])
     now = time.time()
@@ -249,7 +335,6 @@ def build_state(game: str) -> dict:
                 "first_name": p["first_name"],
                 "stake": p["stake"],
                 "share": round(p["stake"] / total * 100, 2) if total else 0,
-                "angle": round(p["stake"] / total * 360, 2) if total else 0,
                 "color": p["color"],
             }
             for p in lob["players"]
@@ -261,7 +346,6 @@ def build_state(game: str) -> dict:
     }
 
 async def broadcast(game: str, event: str, payload: dict):
-    """Отправить событие всем клиентам, кто в этом лобби или просто смотрит."""
     message = {"event": event, "data": payload}
     dead = []
     for uid, ws in list(ws_clients.items()):
@@ -276,7 +360,6 @@ async def broadcast_state(game: str):
     await broadcast(game, "state", build_state(game))
 
 async def start_lobby_timer(game: str):
-    """Запустить таймер лобби — по истечении стартует раунд."""
     lob = lobbies[game]
     if lob["task"] and not lob["task"].done():
         return
@@ -284,7 +367,6 @@ async def start_lobby_timer(game: str):
     lob["task"] = asyncio.create_task(_lobby_countdown(game))
 
 async def _lobby_countdown(game: str):
-    """Тикаем каждую секунду, рассылаем таймер. По истечении — раунд."""
     lob = lobbies[game]
     try:
         while True:
@@ -293,11 +375,9 @@ async def _lobby_countdown(game: str):
             if left <= 0:
                 break
             await asyncio.sleep(1)
-        # время вышло
         if len(lob["players"]) >= 2:
             await run_round(game)
         else:
-            # возвращаем ставки
             for p in lob["players"]:
                 await change_balance(p["user_id"], p["stake"], "refund", "Возврат (никто не зашёл)")
             players_backup = list(lob["players"])
@@ -308,7 +388,6 @@ async def _lobby_countdown(game: str):
         pass
 
 async def run_round(game: str):
-    """Определяем победителя, крутим анимацию, начисляем деньги."""
     lob = lobbies[game]
     players = list(lob["players"])
     lob["players"] = []
@@ -320,42 +399,40 @@ async def run_round(game: str):
     payout = int(total * (1 - COMMISSION))
     commission = total - payout
 
-    # Старт анимации
     await broadcast(game, "spin", {
         "players": players,
         "winner_index": winner_index,
         "winner_id": winner["user_id"],
-        "winner_name": winner["username"],
+        "winner_name": winner["username"] or winner["first_name"],
         "total": total,
         "payout": payout,
         "duration": SPIN_TIME,
     })
 
-    # Дать клиентам время на анимацию
     await asyncio.sleep(SPIN_TIME)
 
-    # Начисление
     await change_balance(winner["user_id"], payout, "win", f"Победа в {game} (+{payout}⭐)")
-    for p in players:
-        if p["user_id"] != winner["user_id"]:
-            async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("UPDATE users SET total_spent = total_spent + ? WHERE user_id = ?",
-                                 (p["stake"], p["user_id"]))
-                await db.commit()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET total_won = total_won + $1 WHERE user_id = $2",
+                           payout, winner["user_id"])
+        for p in players:
+            if p["user_id"] != winner["user_id"]:
+                await conn.execute("UPDATE users SET total_spent = total_spent + $1 WHERE user_id = $2",
+                                   p["stake"], p["user_id"])
 
-    await save_round(game, total, winner["user_id"], winner["username"], payout, commission, players)
+    await save_round(game, total, winner["user_id"],
+                     winner["username"] or winner["first_name"],
+                     payout, commission, players)
 
     await broadcast(game, "result", {
         "winner_id": winner["user_id"],
-        "winner_name": winner["username"],
+        "winner_name": winner["username"] or winner["first_name"],
         "payout": payout,
         "total": total,
         "commission": commission,
     })
 
     lob["spinning"] = False
-
-    # Если есть новые ставки за время спина — стартуем сразу
     if len(lob["players"]) >= 2:
         asyncio.create_task(start_lobby_timer(game))
     else:
@@ -366,11 +443,12 @@ async def run_round(game: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    log.info("✅ БД готова")
     bot_task = asyncio.create_task(dp.start_polling(bot))
     log.info("🤖 Бот запущен")
     yield
     bot_task.cancel()
+    if pool:
+        await pool.close()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -391,6 +469,7 @@ async def api_me(request: Request):
     if not db_user:
         await upsert_user(user["id"], user.get("username", ""), user.get("first_name", ""))
         db_user = await get_user(user["id"])
+    ref = await get_referral_stats(user["id"])
     return {
         "user_id": user["id"],
         "username": user.get("username", ""),
@@ -398,6 +477,10 @@ async def api_me(request: Request):
         "balance": db_user["balance"],
         "total_topup": db_user["total_topup"],
         "total_spent": db_user["total_spent"],
+        "total_won": db_user["total_won"],
+        "ref_count": ref["count"],
+        "ref_earned": ref["earned"],
+        "is_admin": user["id"] in ADMIN_IDS,
     }
 
 @app.get("/api/history")
@@ -406,7 +489,15 @@ async def api_history(request: Request):
     if not init_data:
         raise HTTPException(401)
     verify_init_data(init_data)
-    return await get_recent_rounds(10)
+    return await get_recent_rounds(20)
+
+@app.get("/api/top")
+async def api_top(request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    verify_init_data(init_data)
+    return await get_top_players(10)
 
 @app.post("/api/topup")
 async def api_topup(request: Request):
@@ -429,7 +520,113 @@ async def api_topup(request: Request):
     )
     return {"ok": True, "message": "Инвойс отправлен в чат с ботом"}
 
-# ==================== ИГРОВЫЕ API ====================
+@app.post("/api/daily")
+async def api_daily(request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    user = verify_init_data(init_data)
+    return await try_daily_bonus(user["id"])
+
+# --------- Вывод ---------
+@app.post("/api/withdraw")
+async def api_withdraw(request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    user = verify_init_data(init_data)
+    body = await request.json()
+    amount = int(body.get("amount", 0))
+    requisites = (body.get("requisites") or "").strip()
+    if amount < MIN_WITHDRAW:
+        raise HTTPException(400, f"Минимум {MIN_WITHDRAW}⭐")
+    if not requisites:
+        raise HTTPException(400, "Укажи реквизиты")
+    db_user = await get_user(user["id"])
+    if db_user["balance"] < amount:
+        raise HTTPException(400, "Недостаточно средств")
+    ok = await atomic_bet(user["id"], amount)
+    if not ok:
+        raise HTTPException(400, "Недостаточно средств")
+    await change_balance(user["id"], 0, "withdraw_hold", f"Заявка на вывод {amount}⭐")
+    wid = await create_withdrawal(user["id"], amount, requisites)
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                f"💸 Заявка №{wid}\n👤 <code>{user['id']}</code> @{user.get('username','')}\n"
+                f"💰 {amount}⭐\n📩 {requisites}",
+            )
+        except Exception:
+            pass
+    return {"ok": True, "withdrawal_id": wid}
+
+# --------- Админка ---------
+@app.get("/api/admin/stats")
+async def api_admin_stats(request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    user = verify_init_data(init_data)
+    require_admin(user["id"])
+    async with pool.acquire() as conn:
+        users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        total_balance = await conn.fetchval("SELECT COALESCE(SUM(balance),0) FROM users")
+        total_topup = await conn.fetchval("SELECT COALESCE(SUM(total_topup),0) FROM users")
+        rounds_count = await conn.fetchval("SELECT COUNT(*) FROM rounds")
+    return {
+        "users": users_count, "total_balance": total_balance,
+        "total_topup": total_topup, "rounds": rounds_count,
+    }
+
+@app.get("/api/admin/withdrawals")
+async def api_admin_withdrawals(request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    user = verify_init_data(init_data)
+    require_admin(user["id"])
+    return await get_pending_withdrawals()
+
+@app.post("/api/admin/withdrawal/{wid}/done")
+async def api_admin_wd_done(wid: int, request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    user = verify_init_data(init_data)
+    require_admin(user["id"])
+    w = await get_withdrawal(wid)
+    if not w or w["status"] != "pending":
+        raise HTTPException(400, "Уже обработана")
+    await set_withdrawal_status(wid, "done")
+    try:
+        await bot.send_message(w["user_id"], f"✅ Заявка №{wid} на {w['amount']}⭐ выполнена!")
+    except Exception:
+        pass
+    return {"ok": True}
+
+@app.post("/api/admin/set_balance")
+async def api_admin_set_balance(request: Request):
+    init_data = request.headers.get("X-Init-Data")
+    if not init_data:
+        raise HTTPException(401)
+    user = verify_init_data(init_data)
+    require_admin(user["id"])
+    body = await request.json()
+    target = int(body.get("user_id"))
+    amount = int(body.get("amount"))
+    db_user = await get_user(target)
+    if not db_user:
+        raise HTTPException(404, "Пользователь не найден")
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET balance = balance + $1 WHERE user_id = $2", amount, target)
+        await conn.execute(
+            "INSERT INTO transactions (user_id, amount, type, description) VALUES ($1,$2,$3,$4)",
+            target, amount, "admin_edit", f"Админ {user['id']}: {amount:+}",
+        )
+    return {"ok": True, "new_balance": db_user["balance"] + amount}
+
+# --------- Игры ---------
 @app.get("/api/game/{game}/state")
 async def api_game_state(game: str, request: Request):
     init_data = request.headers.get("X-Init-Data")
@@ -448,34 +645,26 @@ async def api_game_bet(game: str, request: Request):
     user = verify_init_data(init_data)
     if game not in lobbies:
         raise HTTPException(404)
-
     body = await request.json()
     amount = int(body.get("amount", 0))
-
     if amount < MIN_BET:
         raise HTTPException(400, f"Минимум {MIN_BET}⭐")
     if amount > MAX_BET:
         raise HTTPException(400, f"Максимум {MAX_BET}⭐")
-
     lob = lobbies[game]
     if lob["spinning"]:
-        raise HTTPException(400, "Идёт раунд, подожди")
+        raise HTTPException(400, "Идёт раунд")
     if len(lob["players"]) >= MAX_PLAYERS:
         raise HTTPException(400, "Лобби заполнено")
     for p in lob["players"]:
         if p["user_id"] == user["id"]:
             raise HTTPException(400, "Ты уже сделал ставку")
-
-    # Атомарно списываем
-    ok = await atomic_bet(user["id"], amount)
-    if not ok:
+    if not await atomic_bet(user["id"], amount):
         raise HTTPException(400, "Недостаточно средств")
 
-    # Цвет игрока
     colors = ["#f7b733", "#4fc3f7", "#81c784", "#e57373", "#ba68c8",
               "#ffb74d", "#4db6ac", "#9575cd", "#aed581", "#f06292"]
     color = colors[len(lob["players"]) % len(colors)]
-
     lob["players"].append({
         "user_id": user["id"],
         "username": user.get("username", ""),
@@ -483,34 +672,26 @@ async def api_game_bet(game: str, request: Request):
         "stake": amount,
         "color": color,
     })
-
-    # Логируем транзакцию списания
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO transactions (user_id, amount, type, description) VALUES (?,?,?,?)",
-            (user["id"], -amount, f"{game}_bet", f"Ставка {game}")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO transactions (user_id, amount, type, description) VALUES ($1,$2,$3,$4)",
+            user["id"], -amount, f"{game}_bet", f"Ставка {game}",
         )
-        await db.commit()
-
-    # Запускаем таймер, если ещё не запущен
     if len(lob["players"]) == 1 or not lob["task"] or lob["task"].done():
         await start_lobby_timer(game)
     else:
         await broadcast_state(game)
-
     return {"ok": True, "state": build_state(game)}
 
+# --------- WebSocket ---------
 @app.websocket("/ws/{user_id}")
 async def ws_endpoint(websocket: WebSocket, user_id: int):
     await websocket.accept()
     ws_clients[user_id] = websocket
-    log.info(f"🔌 WS подключён: {user_id}")
     try:
-        # Отправляем начальное состояние обеих игр
         await websocket.send_json({"event": "state", "data": build_state("wheel")})
         await websocket.send_json({"event": "state", "data": build_state("square")})
         while True:
-            # Просто держим соединение, ждём ping/pong
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
@@ -518,7 +699,6 @@ async def ws_endpoint(websocket: WebSocket, user_id: int):
         log.warning(f"WS error {user_id}: {e}")
     finally:
         ws_clients.pop(user_id, None)
-        log.info(f"🔌 WS отключён: {user_id}")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
