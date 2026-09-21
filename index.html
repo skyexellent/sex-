@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -17,55 +18,43 @@
     </header>
 
     <main id="content">
-        <!-- Игры: выбор игры -->
+        <!-- ===== ИГРЫ ===== -->
         <section class="tab" id="tab-games">
             <h2>🎮 Игры</h2>
             <div class="game-buttons">
-                <button class="game-btn wheel-btn" data-game="wheel">
-                    🎡 <span>Колесо</span>
-                </button>
-                <button class="game-btn square-btn" data-game="square">
-                    🟦 <span>Квадрат</span>
-                </button>
+                <button class="game-btn wheel-btn" data-game="wheel">🎡 <span>Колесо</span></button>
+                <button class="game-btn square-btn" data-game="square">🟦 <span>Квадрат</span></button>
             </div>
 
-            <!-- История -->
+            <h3 class="section-title">🏆 Топ игроков</h3>
+            <div id="topList" class="top-list"></div>
+
             <h3 class="section-title">📜 История игр</h3>
             <div id="history" class="history-list"></div>
         </section>
 
-        <!-- Экран игры -->
+        <!-- ===== ИГРА ===== -->
         <section class="tab hidden" id="tab-play">
             <button class="back-btn" onclick="backToGames()">← Назад</button>
             <h2 id="gameTitle">🎡 Колесо</h2>
-
-            <!-- Топ победитель -->
             <div id="topWinner" class="top-winner hidden"></div>
-
-            <!-- Поле игры (колесо или квадрат) -->
-            <div id="fieldContainer" class="field-container">
+            <div class="field-container">
                 <canvas id="gameCanvas" width="340" height="340"></canvas>
             </div>
-
-            <!-- Таймер -->
             <div class="timer-row">
                 <div>⏱️ <b id="timer">—</b> сек</div>
                 <div>💰 Банк: <b id="pool">0</b>⭐</div>
             </div>
-
-            <!-- Участники -->
             <h3 class="section-title">👥 Участники</h3>
             <div id="players" class="players-list"></div>
-
-            <!-- Ставка -->
             <div class="bet-row">
                 <input type="number" id="betAmount" placeholder="Сумма" min="10" max="10000" value="10">
-                <button class="btn-primary" id="betBtn" onclick="placeBet()">Сделать ставку</button>
+                <button class="btn-primary" onclick="placeBet()">Сделать ставку</button>
             </div>
             <p class="muted" id="betError"></p>
         </section>
 
-        <!-- Профиль -->
+        <!-- ===== ПРОФИЛЬ ===== -->
         <section class="tab hidden" id="tab-profile">
             <h2>👤 Профиль</h2>
             <div class="card">
@@ -73,22 +62,53 @@
                 <div class="row"><span>ID:</span><b id="pUserId">—</b></div>
                 <div class="row"><span>Баланс:</span><b id="pBalance">0 ⭐</b></div>
                 <div class="row"><span>Пополнено:</span><b id="pTopup">0 ⭐</b></div>
+                <div class="row"><span>Выиграно:</span><b id="pWon">0 ⭐</b></div>
             </div>
+
             <div class="card">
-                <label>Реферальная ссылка:</label>
-                <div class="ref-link" id="refLink">загрузка…</div>
+                <label>🎁 Ежедневный бонус</label>
+                <p class="muted">Раз в 24 часа — бесплатные 10⭐</p>
+                <button class="btn-primary" onclick="claimDaily()">Забрать бонус</button>
+            </div>
+
+            <div class="card">
+                <label>🔗 Реферальная ссылка</label>
+                <div class="ref-link" id="refLink">—</div>
+                <div class="row"><span>Приглашено:</span><b id="pRefCount">0</b></div>
+                <div class="row"><span>Заработано:</span><b id="pRefEarned">0 ⭐</b></div>
                 <div class="ref-actions">
                     <button class="btn-secondary" onclick="copyRef()">📋 Копировать</button>
                     <button class="btn-primary" onclick="shareRef()">📤 Поделиться</button>
                 </div>
             </div>
+
+            <div class="card">
+                <label>💸 Вывод средств</label>
+                <p class="muted">Минимум 100⭐. Заявка обрабатывается админом.</p>
+                <input type="number" id="wAmount" placeholder="Сумма" min="100">
+                <input type="text" id="wRequisites" placeholder="Реквизиты (@username или TON)" style="margin-top:8px;">
+                <button class="btn-primary" onclick="submitWithdraw()" style="margin-top:8px;">Отправить заявку</button>
+            </div>
         </section>
 
-        <!-- Инвентарь -->
+        <!-- ===== ИНВЕНТАРЬ ===== -->
         <section class="tab hidden" id="tab-inventory">
             <h2>🎒 Инвентарь</h2>
-            <p class="muted">Здесь появятся твои NFT-подарки.</p>
-            <div class="placeholder">Отправь подарок боту, чтобы он появился в инвентаре</div>
+            <div class="placeholder">🔒 NFT-подарки появятся в следующем обновлении</div>
+        </section>
+
+        <!-- ===== АДМИНКА ===== -->
+        <section class="tab hidden" id="tab-admin">
+            <h2>⚙️ Админка</h2>
+            <div class="card" id="adminStats">Загрузка…</div>
+            <h3 class="section-title">💸 Заявки на вывод</h3>
+            <div id="adminWithdrawals">Загрузка…</div>
+            <h3 class="section-title">✏️ Изменить баланс</h3>
+            <div class="card">
+                <input type="number" id="adminUserId" placeholder="ID пользователя">
+                <input type="number" id="adminAmount" placeholder="Сумма (+/-)" style="margin-top:8px;">
+                <button class="btn-primary" onclick="adminSetBalance()" style="margin-top:8px;">Применить</button>
+            </div>
         </section>
     </main>
 
@@ -96,6 +116,7 @@
         <button class="nav-btn active" data-tab="games">🎮<span>Игры</span></button>
         <button class="nav-btn" data-tab="profile">👤<span>Профиль</span></button>
         <button class="nav-btn" data-tab="inventory">🎒<span>Инвентарь</span></button>
+        <button class="nav-btn hidden" id="adminTabBtn" data-tab="admin">⚙️<span>Админ</span></button>
     </nav>
 
     <div class="modal hidden" id="topupModal">
