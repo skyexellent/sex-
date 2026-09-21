@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <!-- Верхняя панель с балансом -->
     <header class="topbar">
         <div class="logo">💫 Lucky</div>
         <button class="balance-btn" id="balanceBtn">
@@ -17,13 +16,53 @@
         </button>
     </header>
 
-    <!-- Контент вкладок -->
     <main id="content">
-        <!-- Игры -->
+        <!-- Игры: выбор игры -->
         <section class="tab" id="tab-games">
             <h2>🎮 Игры</h2>
-            <p class="muted">Скоро здесь появятся Колесо и Квадрат.</p>
-            <div class="placeholder">PvP-раунды в разработке…</div>
+            <div class="game-buttons">
+                <button class="game-btn wheel-btn" data-game="wheel">
+                    🎡 <span>Колесо</span>
+                </button>
+                <button class="game-btn square-btn" data-game="square">
+                    🟦 <span>Квадрат</span>
+                </button>
+            </div>
+
+            <!-- История -->
+            <h3 class="section-title">📜 История игр</h3>
+            <div id="history" class="history-list"></div>
+        </section>
+
+        <!-- Экран игры -->
+        <section class="tab hidden" id="tab-play">
+            <button class="back-btn" onclick="backToGames()">← Назад</button>
+            <h2 id="gameTitle">🎡 Колесо</h2>
+
+            <!-- Топ победитель -->
+            <div id="topWinner" class="top-winner hidden"></div>
+
+            <!-- Поле игры (колесо или квадрат) -->
+            <div id="fieldContainer" class="field-container">
+                <canvas id="gameCanvas" width="340" height="340"></canvas>
+            </div>
+
+            <!-- Таймер -->
+            <div class="timer-row">
+                <div>⏱️ <b id="timer">—</b> сек</div>
+                <div>💰 Банк: <b id="pool">0</b>⭐</div>
+            </div>
+
+            <!-- Участники -->
+            <h3 class="section-title">👥 Участники</h3>
+            <div id="players" class="players-list"></div>
+
+            <!-- Ставка -->
+            <div class="bet-row">
+                <input type="number" id="betAmount" placeholder="Сумма" min="10" max="10000" value="10">
+                <button class="btn-primary" id="betBtn" onclick="placeBet()">Сделать ставку</button>
+            </div>
+            <p class="muted" id="betError"></p>
         </section>
 
         <!-- Профиль -->
@@ -53,14 +92,12 @@
         </section>
     </main>
 
-    <!-- Нижнее меню -->
     <nav class="bottom-nav">
         <button class="nav-btn active" data-tab="games">🎮<span>Игры</span></button>
         <button class="nav-btn" data-tab="profile">👤<span>Профиль</span></button>
         <button class="nav-btn" data-tab="inventory">🎒<span>Инвентарь</span></button>
     </nav>
 
-    <!-- Модалка пополнения -->
     <div class="modal hidden" id="topupModal">
         <div class="modal-content">
             <h3>Пополнить баланс</h3>
