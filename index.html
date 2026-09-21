@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Casino</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Верхняя панель с балансом -->
+    <header class="topbar">
+        <div class="logo">💫 Lucky</div>
+        <button class="balance-btn" id="balanceBtn">
+            <span id="balanceValue">0</span> ⭐
+            <span class="plus">+</span>
+        </button>
+    </header>
+
+    <!-- Контент вкладок -->
+    <main id="content">
+        <!-- Игры -->
+        <section class="tab" id="tab-games">
+            <h2>🎮 Игры</h2>
+            <p class="muted">Скоро здесь появятся Колесо и Квадрат.</p>
+            <div class="placeholder">PvP-раунды в разработке…</div>
+        </section>
+
+        <!-- Профиль -->
+        <section class="tab hidden" id="tab-profile">
+            <h2>👤 Профиль</h2>
+            <div class="card">
+                <div class="row"><span>Ник:</span><b id="pUsername">—</b></div>
+                <div class="row"><span>ID:</span><b id="pUserId">—</b></div>
+                <div class="row"><span>Баланс:</span><b id="pBalance">0 ⭐</b></div>
+                <div class="row"><span>Пополнено:</span><b id="pTopup">0 ⭐</b></div>
+            </div>
+            <div class="card">
+                <label>Реферальная ссылка:</label>
+                <div class="ref-link" id="refLink">загрузка…</div>
+                <div class="ref-actions">
+                    <button class="btn-secondary" onclick="copyRef()">📋 Копировать</button>
+                    <button class="btn-primary" onclick="shareRef()">📤 Поделиться</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Инвентарь -->
+        <section class="tab hidden" id="tab-inventory">
+            <h2>🎒 Инвентарь</h2>
+            <p class="muted">Здесь появятся твои NFT-подарки.</p>
+            <div class="placeholder">Отправь подарок боту, чтобы он появился в инвентаре</div>
+        </section>
+    </main>
+
+    <!-- Нижнее меню -->
+    <nav class="bottom-nav">
+        <button class="nav-btn active" data-tab="games">🎮<span>Игры</span></button>
+        <button class="nav-btn" data-tab="profile">👤<span>Профиль</span></button>
+        <button class="nav-btn" data-tab="inventory">🎒<span>Инвентарь</span></button>
+    </nav>
+
+    <!-- Модалка пополнения -->
+    <div class="modal hidden" id="topupModal">
+        <div class="modal-content">
+            <h3>Пополнить баланс</h3>
+            <div class="quick-btns">
+                <button data-amount="50">50⭐</button>
+                <button data-amount="100">100⭐</button>
+                <button data-amount="250">250⭐</button>
+                <button data-amount="500">500⭐</button>
+                <button data-amount="1000">1000⭐</button>
+            </div>
+            <input type="number" id="customAmount" placeholder="Своя сумма (мин 50)" min="50">
+            <div class="modal-actions">
+                <button class="btn-secondary" onclick="closeTopup()">Отмена</button>
+                <button class="btn-primary" onclick="submitTopup()">Пополнить</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

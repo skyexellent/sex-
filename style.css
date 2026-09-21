@@ -1,0 +1,123 @@
+:root {
+    --bg: var(--tg-theme-bg-color, #17212b);
+    --secondary: var(--tg-theme-secondary-bg-color, #232e3c);
+    --text: var(--tg-theme-text-color, #ffffff);
+    --hint: var(--tg-theme-hint-color, #7d8b99);
+    --link: var(--tg-theme-link-color, #6ab3f3);
+    --button: var(--tg-theme-button-color, #5288c1);
+    --button-text: var(--tg-theme-button-text-color, #ffffff);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow-x: hidden;
+    padding-bottom: 80px;
+    padding-top: 60px;
+}
+
+/* Top bar */
+.topbar {
+    position: fixed; top: 0; left: 0; right: 0; height: 56px;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 16px;
+    background: var(--secondary);
+    z-index: 100;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.logo { font-size: 18px; font-weight: 700; }
+.balance-btn {
+    background: linear-gradient(135deg, #f7b733, #fc4a1a);
+    color: #fff; border: none; border-radius: 20px;
+    padding: 8px 14px; font-size: 15px; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; gap: 6px;
+    box-shadow: 0 2px 8px rgba(247,183,51,0.3);
+}
+.balance-btn .plus {
+    background: rgba(255,255,255,0.25); border-radius: 50%;
+    width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+    font-size: 14px; line-height: 1;
+}
+
+/* Content */
+#content { padding: 16px; }
+.tab h2 { font-size: 22px; margin-bottom: 14px; }
+.muted { color: var(--hint); font-size: 14px; }
+.placeholder {
+    background: var(--secondary); padding: 40px 20px; border-radius: 14px;
+    text-align: center; color: var(--hint); margin-top: 14px;
+}
+
+/* Cards */
+.card {
+    background: var(--secondary); border-radius: 14px; padding: 16px;
+    margin-bottom: 12px;
+}
+.card .row {
+    display: flex; justify-content: space-between;
+    padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.card .row:last-child { border-bottom: none; }
+.ref-link {
+    background: var(--bg); padding: 10px 12px; border-radius: 8px;
+    font-family: monospace; font-size: 12px; word-break: break-all;
+    margin: 8px 0;
+}
+.ref-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* Buttons */
+.btn-primary, .btn-secondary {
+    flex: 1; padding: 12px; border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.btn-primary { background: var(--button); color: var(--button-text); }
+.btn-secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+.btn-primary:active, .btn-secondary:active { opacity: 0.8; }
+
+/* Bottom nav */
+.bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0; height: 64px;
+    display: flex; background: var(--secondary);
+    border-top: 1px solid rgba(255,255,255,0.05); z-index: 100;
+}
+.nav-btn {
+    flex: 1; background: none; border: none; color: var(--hint);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; font-size: 20px; cursor: pointer;
+}
+.nav-btn span { font-size: 11px; }
+.nav-btn.active { color: var(--link); }
+
+/* Modal */
+.modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 200; padding: 16px;
+}
+.modal.hidden { display: none; }
+.modal-content {
+    background: var(--secondary); border-radius: 16px;
+    padding: 20px; width: 100%; max-width: 400px;
+}
+.modal-content h3 { margin-bottom: 14px; }
+.quick-btns {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    margin-bottom: 12px;
+}
+.quick-btns button {
+    background: rgba(255,255,255,0.08); border: none; color: var(--text);
+    padding: 12px; border-radius: 10px; font-size: 14px; font-weight: 600;
+    cursor: pointer;
+}
+.quick-btns button:active { background: var(--button); }
+#customAmount {
+    width: 100%; padding: 12px; border: none; border-radius: 10px;
+    background: rgba(255,255,255,0.08); color: var(--text);
+    font-size: 16px; margin-bottom: 12px;
+}
+.modal-actions { display: flex; gap: 8px; }
+
+.hidden { display: none !important; }
