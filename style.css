@@ -1,3 +1,4 @@
+
 :root {
     --bg: var(--tg-theme-bg-color, #17212b);
     --secondary: var(--tg-theme-secondary-bg-color, #232e3c);
@@ -161,4 +162,18 @@ body {
 }
 .modal-actions { display: flex; gap: 8px; }
 
-.hidden { display: none !important; }
+.hidden { display: none !important; }.top-list { display: flex; flex-direction: column; gap: 6px; }
+.top-row {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--secondary); padding: 10px 14px; border-radius: 10px;
+    font-size: 14px;
+}
+.top-row .rank { font-weight: 800; color: #f7b733; margin-right: 10px; }
+.top-row .name { flex: 1; }
+.top-row .won { font-weight: 700; color: #4fc3f7; }
+
+.card label { font-weight: 600; display: block; margin-bottom: 6px; }
+.card input {
+    width: 100%; padding: 10px; border: none; border-radius: 8px;
+    background: rgba(255,255,255,0.08); color: var(--text); font-size: 15px;
+}
